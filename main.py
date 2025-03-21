@@ -5,7 +5,6 @@ import requests
 import os
 import json
 import time
-import re
 
 # Function to get cure and prevention information from Groq API
 def get_disease_info_from_groq(disease_name):
@@ -89,68 +88,22 @@ IMPORTANT: Ensure your response is a valid JSON object and nothing else."""
             
             try:
                 # Try to fix common JSON errors
+                import re
+                
                 # Replace single quotes with double quotes (common error)
                 fixed_content = cleaned_content.replace("'", '"')
                 
-                # Handle the specific "Expecting property name enclosed in double quotes" error
-                # This happens when JSON keys aren't properly quoted
-                if cleaned_content.strip().startswith('{') and '{' in cleaned_content:
-                    # Extract everything between the first { and the last }
-                    content_between_braces = cleaned_content[cleaned_content.find('{')+1:cleaned_content.rfind('}')].strip()
-                    
-                    # Split by key-value pairs
-                    pairs = re.split(r',\s*(?=\w+\s*:)', content_between_braces)
-                    fixed_pairs = []
-                    
-                    for pair in pairs:
-                        # If the pair doesn't start with a quoted key, fix it
-                        if not pair.strip().startswith('"'):
-                            # Extract key and value
-                            if ':' in pair:
-                                key, value = pair.split(':', 1)
-                                key = key.strip()
-                                value = value.strip()
-                                
-                                # Quote the key if it's not quoted
-                                if not (key.startswith('"') and key.endswith('"')):
-                                    key = f'"{key}"'
-                                
-                                # Make sure value is properly formatted
-                                if value and not (value.startswith('"') or value.startswith('[') or value.startswith('{') or 
-                                                value.replace('.', '', 1).isdigit() or value == 'true' or value == 'false' or value == 'null'):
-                                    value = f'"{value}"'
-                                
-                                fixed_pairs.append(f"{key}: {value}")
-                            else:
-                                # If there's no colon, just quote the whole thing
-                                fixed_pairs.append(f'"{pair.strip()}"')
-                        else:
-                            fixed_pairs.append(pair)
-                    
-                    # Reconstruct the JSON
-                    fixed_content = '{' + ', '.join(fixed_pairs) + '}'
-                
-                # Fix missing quotes around keys - more comprehensive regex
-                fixed_content = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', fixed_content)
+                # Fix missing quotes around keys
+                fixed_content = re.sub(r'(\s*)(\w+)(\s*):([^"])', r'\1"\2"\3:\4', fixed_content)
                 
                 # Fix trailing commas in JSON objects
                 fixed_content = re.sub(r',(\s*})', r'\1', fixed_content)
                 
-                # Fix missing quotes around string values - improved pattern
-                fixed_content = re.sub(r':(\s*)([^"{}\[\],\d][^,{}\[\]]*?)([,}])', r':\1"\2"\3', fixed_content)
+                # Add missing quotes around string values
+                fixed_content = re.sub(r':\s*([^"{}\[\],\d][^,{}\[\]]*?)([,}])', r': "\1"\2', fixed_content)
                 
-                # Try to handle multiline strings better
-                fixed_content = re.sub(r':\s*"(.*?)"', lambda m: ': "' + m.group(1).replace('\n', '\\n') + '"', fixed_content, flags=re.DOTALL)
-                
-                # Ensure all line breaks are properly escaped
+                # Ensure proper line breaks are escaped
                 fixed_content = fixed_content.replace('\n', '\\n')
-                
-                # Clean up any double-escaped newlines
-                fixed_content = fixed_content.replace('\\\\n', '\\n')
-                
-                # Make sure we have valid JSON structure
-                if not (fixed_content.strip().startswith('{') and fixed_content.strip().endswith('}')):
-                    fixed_content = '{' + fixed_content.strip().strip('{').strip('}') + '}'
                 
                 # Try to parse the fixed JSON
                 result = json.loads(fixed_content)
@@ -163,129 +116,107 @@ IMPORTANT: Ensure your response is a valid JSON object and nothing else."""
                         result['prevention'] = "Prevention information not available from API."
                         
                 return result
-            except Exception as json_fix_error:
-                st.warning(f"Couldn't fix JSON format: {str(json_fix_error)}. Using alternative extraction...")
+            except json.JSONDecodeError:
+                # If fixing common errors didn't work, try more aggressive extraction
+                st.warning("Couldn't fix JSON format. Using regex extraction...")
             
-            # Try to extract content in a more direct way
-            try:
-                # Simple text-based extraction if JSON parsing failed
-                cure = ""
-                prevention = ""
-                
-                # Look for "cure" key with various patterns
-                cure_patterns = [
-                    r'"cure"\s*:\s*"(.*?)(?:"|,$)',  # Standard JSON format
-                    r'"cure"\s*:\s*\'(.*?)(?:\'|,$)',  # Single quotes
-                    r'"cure"\s*:\s*([^",{}\[\]]*?)(?:,|$)',  # Unquoted value
-                    r'cure\s*:\s*"(.*?)(?:"|,$)',  # Missing quotes around key
-                    r'cure\s*:\s*\'(.*?)(?:\'|,$)',  # Missing quotes around key, single quotes for value
-                    r'cure\s*:\s*([^",{}\[\]]*?)(?:,|$)'  # Both key and value unquoted
-                ]
-                
-                # Look for "prevention" key with various patterns
-                prevention_patterns = [
-                    r'"prevention"\s*:\s*"(.*?)(?:"|,$)',  # Standard JSON format
-                    r'"prevention"\s*:\s*\'(.*?)(?:\'|,$)',  # Single quotes
-                    r'"prevention"\s*:\s*([^",{}\[\]]*?)(?:,|$)',  # Unquoted value
-                    r'prevention\s*:\s*"(.*?)(?:"|,$)',  # Missing quotes around key
-                    r'prevention\s*:\s*\'(.*?)(?:\'|,$)',  # Missing quotes around key, single quotes for value
-                    r'prevention\s*:\s*([^",{}\[\]]*?)(?:,|$)'  # Both key and value unquoted
-                ]
-                
-                # Try each pattern for cure
-                for pattern in cure_patterns:
-                    cure_section = re.search(pattern, cleaned_content, re.DOTALL)
-                    if cure_section:
-                        cure = cure_section.group(1).replace('\\n', '\n').strip()
-                        break
-                
-                # Try each pattern for prevention
-                for pattern in prevention_patterns:
-                    prevention_section = re.search(pattern, cleaned_content, re.DOTALL)
-                    if prevention_section:
-                        prevention = prevention_section.group(1).replace('\\n', '\n').strip()
-                        break
-                
-                # If we found at least one of the sections, return it
-                if cure or prevention:
-                    result = {
-                        'cure': cure or "Specific cure information not available.",
-                        'prevention': prevention or "Prevention information not available."
-                    }
+            # Try to find the JSON object within the text
+            import re
+            json_pattern = r'\{.*\}'
+            match = re.search(json_pattern, cleaned_content, re.DOTALL)
+            
+            if match:
+                try:
+                    # Try parsing the extracted JSON
+                    json_str = match.group(0)
+                    result = json.loads(json_str)
+                    
+                    # Ensure the response has the expected structure
+                    if 'cure' not in result or 'prevention' not in result:
+                        if 'cure' not in result:
+                            result['cure'] = "Specific cure information not available from API."
+                        if 'prevention' not in result:
+                            result['prevention'] = "Prevention information not available from API."
+                            
                     return result
-            except Exception as extract_error:
-                st.warning(f"Direct extraction failed: {str(extract_error)}. Trying simpler approach...")
+                except:
+                    st.warning("Regex extraction failed. Using text extraction method.")
             
-            # Last resort: just extract any text between "cure" and "prevention" or the end
+            # Extract JSON-like key-value pairs if we can find them
             try:
-                # Find sections by looking for key words
-                cure_keywords = ["cure", "treatment", "manage", "control"]
-                prevention_keywords = ["prevention", "prevent", "avoid", "reducing risk"]
+                st.warning("Attempting to extract key-value pairs directly...")
+                # Look for cure and prevention sections with a more lenient approach
+                cure_pattern = r'"cure"\s*:\s*"([^"]*)"'
+                prevention_pattern = r'"prevention"\s*:\s*"([^"]*)"'
                 
-                cure = "Cure information not found."
-                prevention = "Prevention information not found."
+                cure_match = re.search(cure_pattern, cleaned_content, re.DOTALL)
+                prevention_match = re.search(prevention_pattern, cleaned_content, re.DOTALL)
                 
-                # Try to locate cure information
-                for keyword in cure_keywords:
-                    if keyword.lower() in cleaned_content.lower():
-                        # Find the start of this section
-                        start_idx = cleaned_content.lower().find(keyword.lower())
-                        if start_idx >= 0:
-                            # Skip the keyword and any characters after it that aren't content
-                            content_start = start_idx + len(keyword)
-                            while content_start < len(cleaned_content) and cleaned_content[content_start] in ':"\'.,\s{[':
-                                content_start += 1
-                                
-                            # Find the end of this section (start of prevention or end of text)
+                if cure_match and prevention_match:
+                    return {
+                        'cure': cure_match.group(1).replace('\\n', '\n'),
+                        'prevention': prevention_match.group(1).replace('\\n', '\n')
+                    }
+            except:
+                st.warning("Key-value extraction failed. Using fallback text extraction.")
+            
+            # Text extraction as a last resort
+            cure_info = "Specific cure information not available from API."
+            prevention_info = "Prevention information not available from API."
+            
+            # Look for cure/treatment and prevention information using pattern matching
+            cure_patterns = ["cure", "treatment", "management", "control"]
+            prev_patterns = ["prevention", "preventive", "avoid", "reducing risk"]
+            
+            # Find cure information
+            for pattern in cure_patterns:
+                if pattern in cleaned_content.lower():
+                    # Find pattern and extract surrounding text
+                    pattern_idx = cleaned_content.lower().find(pattern)
+                    if pattern_idx > -1:
+                        # Find end of this section - look for prevention keywords or double newlines
                         end_idx = len(cleaned_content)
-                            for prev_keyword in prevention_keywords:
-                                prev_idx = cleaned_content.lower().find(prev_keyword.lower(), content_start)
-                                if prev_idx > 0 and prev_idx < end_idx:
+                        for prev_pattern in prev_patterns:
+                            prev_idx = cleaned_content.lower().find(prev_pattern, pattern_idx)
+                            if prev_idx > -1 and prev_idx < end_idx:
                                 end_idx = prev_idx
                         
-                            # Extract and format the cure information
-                            if content_start < end_idx:
-                                cure = cleaned_content[content_start:end_idx].strip()
-                                if cure:
-                                    # Format as bullet points if not already
-                                    if not any(line.strip().startswith(('1.', '2.', '•', '-', '*')) for line in cure.split('\n')):
-                                        # Split by sentences or line breaks
-                                        points = re.split(r'(?<=[.!?])\s+|\n+', cure)
-                                        points = [p.strip() for p in points if p.strip()]
-                                        cure = '\n'.join([f"{i+1}. {point}" for i, point in enumerate(points)])
+                        # Extract and clean the cure information
+                        cure_text = cleaned_content[pattern_idx:end_idx].strip()
+                        if cure_text:
+                            cure_info = cure_text
                             break
+            
+            # Find prevention information
+            for pattern in prev_patterns:
+                if pattern in cleaned_content.lower():
+                    # Find pattern and extract text to the end
+                    pattern_idx = cleaned_content.lower().find(pattern)
+                    if pattern_idx > -1:
+                        prevention_text = cleaned_content[pattern_idx:].strip()
+                        if prevention_text:
+                            prevention_info = prevention_text
+                            break
+            
+            # Clean and format the extracted text
+            def format_as_bullet_points(text):
+                # Remove the keyword from the start
+                for kw in cure_patterns + prev_patterns:
+                    if text.lower().startswith(kw):
+                        text = text[len(kw):].lstrip(': \n')
                 
-                # Try to locate prevention information
-                for keyword in prevention_keywords:
-                    if keyword.lower() in cleaned_content.lower():
-                        # Find the start of this section
-                        start_idx = cleaned_content.lower().find(keyword.lower())
-                        if start_idx >= 0:
-                            # Skip the keyword and any characters after it that aren't content
-                            content_start = start_idx + len(keyword)
-                            while content_start < len(cleaned_content) and cleaned_content[content_start] in ':"\'.,\s{[':
-                                content_start += 1
-                                
-                            # Extract to the end
-                            prevention = cleaned_content[content_start:].strip()
-                            if prevention:
-                                # Format as bullet points if not already
-                                if not any(line.strip().startswith(('1.', '2.', '•', '-', '*')) for line in prevention.split('\n')):
-                                    # Split by sentences or line breaks
-                                    points = re.split(r'(?<=[.!?])\s+|\n+', prevention)
-                                    points = [p.strip() for p in points if p.strip()]
-                                    prevention = '\n'.join([f"{i+1}. {point}" for i, point in enumerate(points)])
-                                break
+                # Split by potential bullet points or newlines
+                lines = re.split(r'\n+|\d+\.|\*|\-', text)
+                lines = [line.strip() for line in lines if line.strip()]
                 
-                return {
-                    'cure': cure,
-                    'prevention': prevention
-                }
-            except Exception:
-                # Final fallback
+                # Format as numbered bullet points
+                if lines:
+                    return "\n".join([f"{i+1}. {line}" for i, line in enumerate(lines)])
+                return text
+            
             return {
-                    'cure': "Unable to extract cure information from API response.",
-                    'prevention': "Unable to extract prevention information from API response."
+                'cure': format_as_bullet_points(cure_info),
+                'prevention': format_as_bullet_points(prevention_info)
             }
     
     except Exception as e:
